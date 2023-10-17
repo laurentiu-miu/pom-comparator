@@ -9,7 +9,10 @@ import org.springframework.core.io.Resource;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -33,49 +36,70 @@ public class PomComparatorApplication implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
+        List<String> output = new ArrayList<>();
+
         List<Dependency> oldDep = parseDependencyFile(oldPom);
         List<Dependency> newDep = parseDependencyFile(newPom);
-        System.out.println("Total Dep OLD:" + oldDep.size());
-        System.out.println("Total Dep NEW:" + newDep.size());
+        output.add("Total Dep OLD:" + oldDep.size());
+        output.add("Total Dep NEW:" + newDep.size());
         List<Dependency> intersection = new ArrayList<>(newDep);
         intersection.retainAll(oldDep);
 
-        List<Dependency> inOldNotInNew = oldDep.stream().filter(el -> !intersection.contains(el)).toList();
-        List<Dependency> inNewNotInOld = newDep.stream().filter(el -> !intersection.contains(el)).toList();
+        List<Dependency> inOldNotInNew = difference(oldDep,intersection);
+        List<Dependency> inNewNotInOld = difference(newDep,intersection);
 
-        System.out.println("-------inOldNotInNew-------");
-        inOldNotInNew.forEach(System.out::println);
-        System.out.println("-------inNewNotInOld-------");
-        inNewNotInOld.forEach(System.out::println);
+        List<Dependency> commonLibrariesDifferentVersions = new ArrayList<>(onlyGroupIdAndArtifactId(inOldNotInNew));
+        commonLibrariesDifferentVersions.retainAll(onlyGroupIdAndArtifactId(inNewNotInOld));
+        output.add("-------Difference Versions-----");
+        commonLibrariesDifferentVersions.forEach(dep->{
+            var oldVersion = getVersionForDiff(inOldNotInNew, dep);
+            var newVersion = getVersionForDiff(inNewNotInOld, dep);
+            output.add(printDependencyDifference(dep,oldVersion,newVersion));
+        });
 
-		List<Dependency> diffVersions = new ArrayList<>(inOldNotInNew.stream()
-				.map(dep->new Dependency(dep.getGroupId(), dep.getArtifactId(), null,null,null))
-                .toList());
-		diffVersions.retainAll(inNewNotInOld.stream()
-				.map(dep->new Dependency(dep.getGroupId(), dep.getArtifactId(), null,null,null))
-				.toList());
-		System.out.println("-------Difference Versions-------");
-		diffVersions.forEach(diff->{
-			var oldVersion = inOldNotInNew.stream()
-                    .filter(el->el.getGroupId().equals(diff.getGroupId())&&el.getArtifactId().equals(diff.getArtifactId()))
-                    .findFirst()
-                    .get()
-                    .getVersion();
-			var newVersion = inNewNotInOld.stream()
-                    .filter(el->el.getGroupId().equals(diff.getGroupId())&&el.getArtifactId().equals(diff.getArtifactId()))
-                    .findFirst()
-                    .get()
-                    .getVersion();
+        output.add("-------In Old Not In New-------");
+        inOldNotInNew.forEach(e->output.add(e.toString()));
+        output.add("-------In New Not In Old-------");
+        inNewNotInOld.forEach(e->output.add(e.toString()));
 
-            int dotCount = 55 - (diff.getGroupId() + ":" + diff.getArtifactId()).length();
-            String dots = IntStream.range(0, dotCount)
-                    .mapToObj(i -> ".")
-                    .reduce("", (a, b) -> a + b);;
+        writeLinesToFile(generateFileNameWithDateTime(),output);
+    }
 
-			String template = String.format("%s %s %-10s -> %s", diff.getGroupId() + ":" + diff.getArtifactId(), dots, oldVersion, newVersion);
-			System.out.println(template);
-		});
+    public static String generateFileNameWithDateTime() {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+        return LocalDateTime.now().format(formatter) + ".txt";
+    }
+    public static void writeLinesToFile(String filePath, List<String> lines) {
+        try {
+            Path path = Paths.get(filePath);
+            Files.write(path, lines);
+        } catch (Exception e) {
+            log.error(e);
+        }
+    }
+    private List<Dependency> difference(List<Dependency> list1, List<Dependency> list2){
+        return list1.stream().filter(el -> !list2.contains(el)).toList();
+    }
+    private List<Dependency> onlyGroupIdAndArtifactId(List<Dependency> list){
+        return list.stream()
+                .map(dep->new Dependency(dep.getGroupId(), dep.getArtifactId(), null,null,null))
+                .toList();
+    }
 
+    private String printDependencyDifference(Dependency dependency, String oldVersion, String newVersion){
+        int dotCount = 55 - (dependency.getGroupId() + ":" + dependency.getArtifactId()).length();
+        String dots = IntStream.range(0, dotCount)
+                .mapToObj(i -> ".")
+                .reduce("", (a, b) -> a + b);;
+        return String.format("%s %s %-10s -> %s", dependency.getGroupId() + ":" + dependency.getArtifactId(), dots, oldVersion, newVersion);
+    }
+
+    private String getVersionForDiff(List<Dependency> elements, Dependency dependency) {
+        return elements.stream()
+                .filter(el -> el.getGroupId().equals(dependency.getGroupId()) && el.getArtifactId().equals(dependency.getArtifactId()))
+                .findFirst()
+                .get()
+                .getVersion();
     }
 
     public List<Dependency> parseDependencyFile(Resource resource) {
@@ -83,7 +107,6 @@ public class PomComparatorApplication implements CommandLineRunner {
             return stream.map(line -> {
                         var pt = Pattern.compile("([\\w\\.\\-]+):([\\w\\.\\-]+):(\\w+).*:([\\w+].*):([\\w\\.]+)");
                         Matcher m = pt.matcher(line);
-                        System.out.println(line);
                         if (m.find()) {
                             return new Dependency(m.group(1), m.group(2), m.group(3), m.group(4), m.group(5));
                         } else {
